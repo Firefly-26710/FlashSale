@@ -1,5 +1,5 @@
-// API配置
-export const API_BASE_URL = 'http://localhost:6005/api'
+// API 配置：使用相对路径，由 nginx 反向代理到后端容器
+export const API_BASE_URL = '/api'
 
 // Axios默认配置
 export const AXIOS_CONFIG = {
