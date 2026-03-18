@@ -7,14 +7,17 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -32,6 +35,18 @@ public class ProductService {
     private static final String PRODUCT_DETAIL_REBUILD_LOCK_KEY_PREFIX = "product:detail:lock:";
     // 空值占位，避免不存在商品反复穿透到数据库
     private static final String NULL_VALUE_MARKER = "__NULL__";
+
+    private static final DefaultRedisScript<Long> UNLOCK_IF_OWNER_SCRIPT;
+
+    static {
+        UNLOCK_IF_OWNER_SCRIPT = new DefaultRedisScript<>();
+        UNLOCK_IF_OWNER_SCRIPT.setScriptText(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then " +
+                        "return redis.call('del', KEYS[1]) " +
+                        "else return 0 end"
+        );
+        UNLOCK_IF_OWNER_SCRIPT.setResultType(Long.class);
+    }
 
     private final ProductRepository productRepository;
     private final ProductBloomFilterService bloomFilterService;
@@ -194,14 +209,8 @@ public class ProductService {
 
     private void triggerAsyncRebuild(int id, String cacheKey) {
         String rebuildLockKey = PRODUCT_DETAIL_REBUILD_LOCK_KEY_PREFIX + id;
-        // 使用分布式短锁控制并发重建：同一时刻仅允许一个线程重建该商品缓存
-        Boolean lockSuccess = redisTemplate.opsForValue().setIfAbsent(
-                rebuildLockKey,
-                "1",
-                Duration.ofSeconds(productDetailRebuildLockSeconds)
-        );
-
-        if (!Boolean.TRUE.equals(lockSuccess)) {
+        String lockToken = tryAcquireRebuildLock(rebuildLockKey, productDetailRebuildLockSeconds);
+        if (lockToken == null) {
             return;
         }
 
@@ -210,8 +219,8 @@ public class ProductService {
                 // 后台刷新缓存，不阻塞当前请求
                 loadFromDatabaseAndWriteCache(id, cacheKey);
             } finally {
-                // 无论重建成功与否都释放重建锁，防止死锁
-                redisTemplate.delete(rebuildLockKey);
+                // 使用 token + Lua 原子校验释放锁，避免误删他人新锁
+                releaseRebuildLockSafely(rebuildLockKey, lockToken);
             }
         });
     }
@@ -252,13 +261,8 @@ public class ProductService {
 
     //触发商品列表异步重建。
     private void triggerAsyncListRebuild() {
-        Boolean lockSuccess = redisTemplate.opsForValue().setIfAbsent(
-                PRODUCT_LIST_REBUILD_LOCK_KEY,
-                "1",
-                Duration.ofSeconds(productListRebuildLockSeconds)
-        );
-
-        if (!Boolean.TRUE.equals(lockSuccess)) {
+        String lockToken = tryAcquireRebuildLock(PRODUCT_LIST_REBUILD_LOCK_KEY, productListRebuildLockSeconds);
+        if (lockToken == null) {
             return;
         }
 
@@ -266,9 +270,27 @@ public class ProductService {
             try {
                 loadProductListFromDatabaseAndWriteCache();
             } finally {
-                redisTemplate.delete(PRODUCT_LIST_REBUILD_LOCK_KEY);
+                releaseRebuildLockSafely(PRODUCT_LIST_REBUILD_LOCK_KEY, lockToken);
             }
         });
+    }
+
+    private String tryAcquireRebuildLock(String lockKey, long lockSeconds) {
+        String lockToken = UUID.randomUUID().toString();
+        Boolean lockSuccess = redisTemplate.opsForValue().setIfAbsent(
+                lockKey,
+                lockToken,
+                Duration.ofSeconds(lockSeconds)
+        );
+        return Boolean.TRUE.equals(lockSuccess) ? lockToken : null;
+    }
+
+    private void releaseRebuildLockSafely(String lockKey, String lockToken) {
+        redisTemplate.execute(
+                UNLOCK_IF_OWNER_SCRIPT,
+                Collections.singletonList(lockKey),
+                lockToken
+        );
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)

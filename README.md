@@ -35,7 +35,9 @@ docker compose logs -f
 查看单个服务日志：
 
 ```bash
-docker compose logs -f mysql
+docker compose logs -f mysql-primary
+docker compose logs -f mysql-replica
+docker compose logs -f proxysql
 docker compose logs -f backend1
 docker compose logs -f backend2
 docker compose logs -f frontend
@@ -80,5 +82,22 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 - 前端入口：`http://localhost`（默认 `80`）
 - 后端实例1：`http://localhost:8081`
 - 后端实例2：`http://localhost:8082`
-- MySQL：`localhost:3307`
+- MySQL 主库：`localhost:3307`
+- MySQL 从库：`localhost:3308`
+- ProxySQL 数据端口：`localhost:6033`
+- ProxySQL 管理端口：`localhost:6032`
 
+## 5. ProxySQL 读写分离
+
+当前 `docker compose` 已内置：
+
+- `mysql-primary`（主库）
+- `mysql-replica`（从库）
+- `mysql-replica-init`（一次性初始化复制）
+- `proxysql`（SQL 路由）
+
+后端默认通过 ProxySQL 连接数据库：
+
+- `SPRING_DATASOURCE_URL=jdbc:mysql://proxysql:6033/FlashSale...`
+- `SPRING_DATASOURCE_USERNAME=appuser`
+- `SPRING_DATASOURCE_PASSWORD=app_pass`
