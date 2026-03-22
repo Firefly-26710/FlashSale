@@ -23,6 +23,15 @@ export const productApi = {
     return productClient.get('/products')
   },
 
+  search(keyword, size = 20) {
+    return productClient.get('/products/search', {
+      params: {
+        q: keyword,
+        size,
+      },
+    })
+  },
+
   detail(id) {
     return productClient.get(`/products/${id}`)
   },

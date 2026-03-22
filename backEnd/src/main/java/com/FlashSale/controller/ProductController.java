@@ -2,6 +2,7 @@ package com.FlashSale.Controller;
 
 import com.FlashSale.Entity.Product;
 import com.FlashSale.Service.ApiRateLimitService;
+import com.FlashSale.Service.ProductSearchService;
 import com.FlashSale.Service.ProductService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -9,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.List;
 
 @RestController
 @RequestMapping("api/products")
@@ -20,6 +22,9 @@ public class ProductController {
 
     @Autowired
     private ApiRateLimitService apiRateLimitService;
+
+    @Autowired
+    private ProductSearchService productSearchService;
 
     @GetMapping
     public ResponseEntity<?> listProducts() {
@@ -47,5 +52,16 @@ public class ProductController {
             return ResponseEntity.ok(product.get());
         }
         return ResponseEntity.status(404).body(Map.of("message", "商品不存在"));
+    }
+
+    @GetMapping("/search")
+    public ResponseEntity<?> searchProducts(@RequestParam("q") String keyword,
+                                            @RequestParam(value = "size", defaultValue = "20") int size) {
+        if (!apiRateLimitService.allowProductListRequest()) {
+            return ResponseEntity.status(429).body(Map.of("message", "请求过于频繁，请稍后再试"));
+        }
+
+        List<Product> results = productSearchService.search(keyword, size);
+        return ResponseEntity.ok(results);
     }
 }

@@ -60,11 +60,11 @@
             <el-button text>查看全部</el-button>
           </div>
 
-          <div v-if="loadingProducts" class="status-row">商品加载中...</div>
-          <div v-else-if="filteredProducts.length === 0" class="status-row">暂无匹配商品</div>
+          <div v-if="loadingProducts || searchingProducts" class="status-row">商品加载中...</div>
+          <div v-else-if="displayedProducts.length === 0" class="status-row">暂无匹配商品</div>
 
           <div v-else class="product-grid">
-            <article v-for="item in filteredProducts" :key="item.id" class="product-card">
+            <article v-for="item in displayedProducts" :key="item.id" class="product-card">
               <img class="product-cover" :src="item.imageUrl || fallbackImage" :alt="item.name" />
               <div class="product-info">
                 <h4>{{ item.name }}</h4>
@@ -107,7 +107,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
 import { productApi } from '../api/product'
@@ -116,18 +116,18 @@ const router = useRouter()
 const authStore = useAuthStore()
 const products = ref([])
 const loadingProducts = ref(false)
+const searchingProducts = ref(false)
+const searchResults = ref([])
 const keyword = ref('')
 const fallbackImage = 'https://picsum.photos/seed/flashsale/640/360'
 const categories = ['手机数码', '家用电器', '美妆个护', '运动户外', '食品生鲜', '母婴玩具']
+let searchTimer = null
 
-const filteredProducts = computed(() => {
-  if (!keyword.value) return products.value
-  const lower = keyword.value.toLowerCase()
-  return products.value.filter((item) => {
-    const name = String(item.name || '').toLowerCase()
-    const desc = String(item.description || '').toLowerCase()
-    return name.includes(lower) || desc.includes(lower)
-  })
+const displayedProducts = computed(() => {
+  if (!keyword.value.trim()) {
+    return products.value
+  }
+  return searchResults.value
 })
 
 const loadProducts = async () => {
@@ -142,6 +142,41 @@ const loadProducts = async () => {
   }
 }
 
+const doRemoteSearch = async (value) => {
+  const q = value.trim()
+  if (!q) {
+    searchResults.value = []
+    searchingProducts.value = false
+    return
+  }
+
+  searchingProducts.value = true
+  try {
+    const { data } = await productApi.search(q, 20)
+    searchResults.value = Array.isArray(data) ? data : []
+  } catch (error) {
+    searchResults.value = []
+  } finally {
+    searchingProducts.value = false
+  }
+}
+
+watch(keyword, (value) => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+  }
+
+  if (!value.trim()) {
+    searchResults.value = []
+    searchingProducts.value = false
+    return
+  }
+
+  searchTimer = setTimeout(() => {
+    doRemoteSearch(value)
+  }, 300)
+})
+
 const goProductDetail = (id) => {
   router.push(`/products/${id}`)
 }
@@ -152,6 +187,12 @@ const logout = () => {
 }
 
 onMounted(loadProducts)
+
+onBeforeUnmount(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+  }
+})
 </script>
 
 <style scoped>

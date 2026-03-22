@@ -86,6 +86,7 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 - MySQL 从库：`localhost:3308`
 - ProxySQL 数据端口：`localhost:6033`
 - ProxySQL 管理端口：`localhost:6032`
+- Elasticsearch：`http://localhost:9200`
 
 ## 5. ProxySQL 读写分离
 
@@ -101,3 +102,17 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 - `SPRING_DATASOURCE_URL=jdbc:mysql://proxysql:6033/FlashSale...`
 - `SPRING_DATASOURCE_USERNAME=appuser`
 - `SPRING_DATASOURCE_PASSWORD=app_pass`
+
+## 6. 商品搜索（Elasticsearch）
+
+已新增 Elasticsearch 服务，后端启动后会自动把当前商品数据同步到 `products` 索引（ES 不可用时自动降级到 MySQL 模糊查询）。
+
+搜索接口：
+
+- `GET /api/products/search?q=关键词&size=20`
+
+示例：
+
+```bash
+curl "http://localhost/api/products/search?q=鼠标&size=10"
+```
