@@ -15,7 +15,7 @@
       </div>
       <div class="header-actions">
         <el-button text>个人中心</el-button>
-        <el-button text>我的订单</el-button>
+        <el-button text @click="goOrders">我的订单</el-button>
         <el-button type="primary" class="brand-btn" @click="logout">退出登录</el-button>
       </div>
     </header>
@@ -82,11 +82,8 @@
         <aside class="side-area">
           <section class="side-card glass">
             <h3>我的订单</h3>
-            <ul>
-              <li>待支付订单 2</li>
-              <li>待发货订单 1</li>
-              <li>已完成订单 12</li>
-            </ul>
+            <p>在独立订单页面查看全部订单与订单详情。</p>
+            <el-button text @click="goOrders">进入我的订单</el-button>
           </section>
           <section class="side-card glass">
             <h3>系统公告</h3>
@@ -179,6 +176,10 @@ watch(keyword, (value) => {
 
 const goProductDetail = (id) => {
   router.push(`/products/${id}`)
+}
+
+const goOrders = () => {
+  router.push('/orders')
 }
 
 const logout = () => {
@@ -403,6 +404,7 @@ onBeforeUnmount(() => {
   min-height: 42px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

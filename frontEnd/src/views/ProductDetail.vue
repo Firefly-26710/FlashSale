@@ -48,9 +48,15 @@
           </div>
 
           <div class="purchase-row">
-            <el-input-number v-model="quantity" :min="1" :max="maxBuy" size="large" />
-            <el-button class="buy-btn" type="primary" size="large" :disabled="product.stock === 0">
-              立即购买
+            <el-button
+              class="buy-btn"
+              type="primary"
+              size="large"
+              :loading="submittingOrder"
+              :disabled="product.stock === 0"
+              @click="handleSeckill"
+            >
+              立即秒杀
             </el-button>
             <el-button size="large">加入收藏</el-button>
           </div>
@@ -59,6 +65,8 @@
             <p>活动说明：下单后 15 分钟内完成支付，超时订单将自动取消。</p>
             <p>配送说明：工作日下单后预计 24 小时内发货。</p>
           </div>
+
+          <p class="seckill-feedback" v-if="orderMessage">{{ orderMessage }}</p>
         </article>
 
         <article class="detail-tabs glass">
@@ -93,9 +101,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { productApi } from '../api/product'
+import { orderApi } from '../api/order'
 
 const route = useRoute()
 const router = useRouter()
@@ -103,16 +113,12 @@ const router = useRouter()
 const loading = ref(true)
 const error = ref('')
 const product = ref(null)
-const quantity = ref(1)
+const submittingOrder = ref(false)
+const orderMessage = ref('')
 const fallbackImage = 'https://picsum.photos/seed/product-main/960/640'
 const fallbackAltA = 'https://picsum.photos/seed/product-alt-a/320/220'
 const fallbackAltB = 'https://picsum.photos/seed/product-alt-b/320/220'
 const recommendations = ['电竞机械键盘', '旗舰降噪耳机', '便携咖啡机', '超轻运动跑鞋']
-
-const maxBuy = computed(() => {
-  if (!product.value?.stock || product.value.stock <= 0) return 1
-  return product.value.stock
-})
 
 const loadDetail = async () => {
   loading.value = true
@@ -120,7 +126,6 @@ const loadDetail = async () => {
   try {
     const { data } = await productApi.detail(route.params.id)
     product.value = data
-    quantity.value = 1
   } catch (err) {
     error.value = err?.response?.data?.message || '加载商品失败'
   } finally {
@@ -130,6 +135,36 @@ const loadDetail = async () => {
 
 const goBack = () => {
   router.push('/')
+}
+
+// 秒杀后短轮询库存，兼容异步下单带来的最终一致性延迟。
+const refreshStockWithRetry = async (originStock) => {
+  for (let index = 0; index < 3; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await loadDetail()
+    if (product.value?.stock < originStock) {
+      return
+    }
+  }
+}
+
+const handleSeckill = async () => {
+  if (!product.value?.id) return
+
+  const originStock = Number(product.value.stock || 0)
+  submittingOrder.value = true
+  try {
+    const { data } = await orderApi.seckill(product.value.id)
+    orderMessage.value = `${data?.message || '秒杀请求成功'}。订单号：${data?.orderId || '-'}，请到首页“我的订单”查看详情。`
+    ElMessage.success('秒杀请求已提交，正在异步创建订单')
+    await refreshStockWithRetry(originStock)
+  } catch (err) {
+    const msg = err?.response?.data?.message || '秒杀失败'
+    orderMessage.value = msg
+    ElMessage.error(msg)
+  } finally {
+    submittingOrder.value = false
+  }
 }
 
 onMounted(loadDetail)
@@ -327,6 +362,12 @@ onMounted(loadDetail)
   margin: 6px 0 0;
   color: var(--ink-2);
   font-size: 13px;
+}
+
+.seckill-feedback {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--ink-2);
 }
 
 .detail-tabs {
