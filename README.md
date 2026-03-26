@@ -2,7 +2,7 @@
 
 ## 1. 启动与停止
 
-启动（构建并后台运行）：
+默认启动（构建并后台运行，默认走分库分表）：
 
 ```bash
 docker compose up -d --build
@@ -23,6 +23,22 @@ docker compose ps
 ```bash
 docker compose down
 ```
+
+### 1.1 改代码后，确保服务是最新版
+
+全量重建（推荐）：
+
+```bash
+docker compose up -d --build --force-recreate
+```
+
+仅前后端重建（更快）：
+
+```bash
+docker compose up -d --build --force-recreate backend1 backend2 frontend
+```
+
+只改单个服务时，将服务名替换为目标服务（如 `backend1`、`frontend`）。
 
 ## 2. 日志与结果查看
 
@@ -97,11 +113,16 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 - `mysql-replica-init`（一次性初始化复制）
 - `proxysql`（SQL 路由）
 
-后端默认通过 ProxySQL 连接数据库：
+默认链路：后端 -> ShardingSphere-Proxy -> ProxySQL -> MySQL 主从。
 
-- `SPRING_DATASOURCE_URL=jdbc:mysql://proxysql:6033/FlashSale...`
-- `SPRING_DATASOURCE_USERNAME=appuser`
-- `SPRING_DATASOURCE_PASSWORD=app_pass`
+如果需要临时切回“仅 ProxySQL（不走分片）”模式：
+
+```powershell
+$env:SPRING_DATASOURCE_URL='jdbc:mysql://proxysql:6033/FlashSale?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai'
+$env:SPRING_JPA_HIBERNATE_DDL_AUTO='update'
+$env:SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS='true'
+docker compose up -d --build --force-recreate backend1 backend2
+```
 
 ## 6. 商品搜索（Elasticsearch）
 
@@ -116,3 +137,40 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 ```bash
 curl "http://localhost/api/products/search?q=鼠标&size=10"
 ```
+
+## 7. 订单分库分表（ShardingSphere-Proxy）
+
+分片策略：
+
+- 按 `user_id` 分库：`ds0` / `ds1`
+- 按 `id`（订单ID）分表：`orders_0` / `orders_1`
+
+默认已启用分片代理模式（启动命令见第 1 节）。
+
+快速校验是否已走分片代理：
+
+```powershell
+docker compose exec backend1 printenv | Select-String "SPRING_DATASOURCE_URL"
+docker compose exec backend2 printenv | Select-String "SPRING_DATASOURCE_URL"
+```
+
+期望输出包含：`jdbc:mysql://shardingsphere-proxy:3307/FlashSale...`
+
+相关配置文件：
+
+- `infra/shardingsphere-proxy/server.yaml`
+- `infra/shardingsphere-proxy/config-flashsale.yaml`
+
+分片物理表初始化脚本：
+
+- `backEnd/src/main/resources/init.sql`
+
+### 7.1 模式切换后秒杀一致性（避免“看不到旧订单/不能重秒”）
+
+当切换了数据源模式（例如从 ProxySQL 切到分片）后，建议执行一次：
+
+```powershell
+docker compose exec redis redis-cli --scan --pattern "seckill:users:*" | % { docker compose exec redis redis-cli DEL $_ }
+```
+
+这条命令只清理“用户去重集合”，不会删除商品库存键和其他业务数据。

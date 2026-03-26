@@ -3,6 +3,7 @@ GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'repl'@'%';
 
 CREATE USER IF NOT EXISTS 'appuser'@'%' IDENTIFIED BY 'app_pass';
 GRANT ALL PRIVILEGES ON FlashSale.* TO 'appuser'@'%';
+GRANT ALL PRIVILEGES ON FlashSale_ds1.* TO 'appuser'@'%';
 
 CREATE USER IF NOT EXISTS 'monitor'@'%' IDENTIFIED BY 'monitor123';
 GRANT USAGE, REPLICATION CLIENT ON *.* TO 'monitor'@'%';

@@ -74,6 +74,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
 import { orderApi } from '../api/order'
 import { productApi } from '../api/product'
+import { authApi } from '../api/auth'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -86,9 +87,34 @@ const queryOrderId = ref('')
 const queriedOrder = ref(null)
 const fallbackImage = 'https://picsum.photos/seed/order-product/400/260'
 
+// 从 token 同步用户ID，避免 localStorage 中 userId 缺失或过期导致“我的订单”为空。
+const ensureUserId = async () => {
+  if (authStore.userId) {
+    return authStore.userId
+  }
+
+  if (!authStore.token) {
+    return null
+  }
+
+  try {
+    const { data } = await authApi.getUserInfo()
+    if (data?.id) {
+      authStore.setUserId(data.id)
+      return data.id
+    }
+  } catch (error) {
+    return null
+  }
+
+  return null
+}
+
 // 加载我的订单列表。
 const loadMyOrders = async () => {
-  if (!authStore.userId) {
+  const currentUserId = await ensureUserId()
+
+  if (!currentUserId) {
     ElMessage.warning('请先登录')
     router.replace('/login')
     return
@@ -96,7 +122,7 @@ const loadMyOrders = async () => {
 
   loadingOrders.value = true
   try {
-    const { data } = await orderApi.getByUserId(authStore.userId)
+    const { data } = await orderApi.getByUserId(currentUserId)
     orders.value = Array.isArray(data) ? data : []
   } catch (error) {
     ElMessage.error(error?.response?.data?.message || '订单加载失败')

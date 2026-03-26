@@ -37,9 +37,12 @@ public class SnowflakeIdService {
             sequence = (sequence + 1) & MAX_SEQUENCE;
             if (sequence == 0) {
                 timestamp = waitUntilNextMillis(lastTimestamp);
+                // 跨毫秒后重新设置起始序列，避免ID长期偏偶数。
+                sequence = initialSequenceForTimestamp(timestamp);
             }
         } else {
-            sequence = 0L;
+            // 每个新毫秒按时间奇偶设置初始序列，提升ID低位奇偶分布均衡性。
+            sequence = initialSequenceForTimestamp(timestamp);
         }
 
         lastTimestamp = timestamp;
@@ -62,5 +65,10 @@ public class SnowflakeIdService {
     // 统一获取当前毫秒时间戳。
     private long currentMillis() {
         return Instant.now().toEpochMilli();
+    }
+
+    // 根据毫秒时间戳设置初始序列（0或1），用于改善ID奇偶分布。
+    private long initialSequenceForTimestamp(long timestamp) {
+        return timestamp & 1L;
     }
 }

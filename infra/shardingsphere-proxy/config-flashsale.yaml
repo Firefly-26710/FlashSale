@@ -1,0 +1,38 @@
+databaseName: FlashSale
+
+dataSources:
+  ds0:
+    url: jdbc:mysql://proxysql:6033/FlashSale?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: appuser
+    password: app_pass
+  ds1:
+    url: jdbc:mysql://proxysql:6033/FlashSale_ds1?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: appuser
+    password: app_pass
+
+rules:
+  - !SHARDING
+    tables:
+      orders:
+        actualDataNodes: ds${0..1}.orders_${0..1}
+        databaseStrategy:
+          standard:
+            shardingColumn: user_id
+            shardingAlgorithmName: orders_database_inline
+        tableStrategy:
+          standard:
+            shardingColumn: id
+            shardingAlgorithmName: orders_table_inline
+    shardingAlgorithms:
+      orders_database_inline:
+        type: INLINE
+        props:
+          algorithm-expression: ds${user_id % 2}
+      orders_table_inline:
+        type: INLINE
+        props:
+          algorithm-expression: orders_${id % 2}
+  - !SINGLE
+    tables:
+      - ds0.user
+      - ds0.product
