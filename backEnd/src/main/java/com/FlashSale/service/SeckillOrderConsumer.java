@@ -8,6 +8,8 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Set;
+
 @Service
 // 秒杀订单消费者：消费Kafka消息并在数据库中落单。
 public class SeckillOrderConsumer {
@@ -15,6 +17,7 @@ public class SeckillOrderConsumer {
     private static final String STOCK_KEY_PREFIX = "seckill:stock:";
     private static final String PRODUCT_DETAIL_KEY_PREFIX = "product:detail:";
     private static final String PRODUCT_LIST_KEY = "product:list:all";
+    private static final Set<String> ACTIVE_ORDER_STATUSES = Set.of("PENDING_PAYMENT", "PAID", "PAY_FAILED");
 
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
@@ -41,7 +44,7 @@ public class SeckillOrderConsumer {
             return;
         }
 
-        if (orderRepository.existsByUserIdAndProductId(message.getUserId(), message.getProductId())) {
+        if (orderRepository.existsByUserIdAndProductIdAndStatusIn(message.getUserId(), message.getProductId(), ACTIVE_ORDER_STATUSES)) {
             // 数据库已存在订单，说明本次消息是重复消费或Redis状态丢失，补回一次Redis库存。
             compensateRedisStock(message.getProductId());
             return;
@@ -60,7 +63,7 @@ public class SeckillOrderConsumer {
         order.setProductId(message.getProductId());
         order.setQuantity(message.getQuantity());
         order.setAmount(message.getAmount());
-        order.setStatus("SUCCESS");
+        order.setStatus("PENDING_PAYMENT");
 
         orderRepository.save(order);
 

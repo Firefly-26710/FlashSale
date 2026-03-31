@@ -31,4 +31,12 @@ export const orderApi = {
   getByUserId(userId) {
     return orderClient.get(`/orders/user/${userId}`)
   },
+
+  pay(orderId) {
+    return orderClient.post(`/orders/${orderId}/pay`)
+  },
+
+  cancel(orderId) {
+    return orderClient.post(`/orders/${orderId}/cancel`)
+  },
 }

@@ -97,11 +97,46 @@
         商品不存在或已下架。
       </section>
     </main>
+
+    <el-dialog
+      v-model="paymentDialogVisible"
+      width="420px"
+      :close-on-click-modal="false"
+      :show-close="!processingPayment"
+      class="payment-dialog"
+      title="订单支付"
+    >
+      <div class="pay-modal-content">
+        <p>订单号：{{ paymentOrderId || '-' }}</p>
+        <p>商品：{{ product?.name || '-' }}</p>
+        <p>金额：￥{{ Number(product?.price || 0).toFixed(2) }}</p>
+        <p>状态：{{ paymentStatusText }}</p>
+      </div>
+      <template #footer>
+        <div class="pay-modal-actions">
+          <el-button
+            :disabled="processingPayment || paymentStatus !== 'PENDING_PAYMENT'"
+            @click="cancelCurrentOrder"
+          >
+            取消订单
+          </el-button>
+          <el-button
+            type="primary"
+            class="buy-btn"
+            :loading="processingPayment"
+            :disabled="paymentStatus !== 'PENDING_PAYMENT'"
+            @click="payCurrentOrder"
+          >
+            立即支付
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { productApi } from '../api/product'
@@ -115,10 +150,22 @@ const error = ref('')
 const product = ref(null)
 const submittingOrder = ref(false)
 const orderMessage = ref('')
+const paymentDialogVisible = ref(false)
+const processingPayment = ref(false)
+const paymentOrderId = ref('')
+const paymentStatus = ref('PENDING_PAYMENT')
 const fallbackImage = 'https://picsum.photos/seed/product-main/960/640'
 const fallbackAltA = 'https://picsum.photos/seed/product-alt-a/320/220'
 const fallbackAltB = 'https://picsum.photos/seed/product-alt-b/320/220'
 const recommendations = ['电竞机械键盘', '旗舰降噪耳机', '便携咖啡机', '超轻运动跑鞋']
+
+const paymentStatusText = computed(() => {
+  if (paymentStatus.value === 'PENDING_PAYMENT') return '待支付'
+  if (paymentStatus.value === 'PAID') return '支付成功'
+  if (paymentStatus.value === 'PAY_FAILED') return '支付失败'
+  if (paymentStatus.value === 'CANCELLED') return '已取消'
+  return '处理中'
+})
 
 const loadDetail = async () => {
   loading.value = true
@@ -155,8 +202,11 @@ const handleSeckill = async () => {
   submittingOrder.value = true
   try {
     const { data } = await orderApi.seckill(product.value.id)
-    orderMessage.value = `${data?.message || '秒杀请求成功'}。订单号：${data?.orderId || '-'}，请到首页“我的订单”查看详情。`
-    ElMessage.success('秒杀请求已提交，正在异步创建订单')
+    paymentOrderId.value = String(data?.orderId || '')
+    paymentStatus.value = 'PENDING_PAYMENT'
+    paymentDialogVisible.value = true
+    orderMessage.value = `${data?.message || '秒杀请求成功'}。订单号：${paymentOrderId.value || '-'}。`
+    ElMessage.success('秒杀成功，请在支付窗口中选择支付或取消')
     await refreshStockWithRetry(originStock)
   } catch (err) {
     const msg = err?.response?.data?.message || '秒杀失败'
@@ -164,6 +214,66 @@ const handleSeckill = async () => {
     ElMessage.error(msg)
   } finally {
     submittingOrder.value = false
+  }
+}
+
+const refreshCurrentOrderStatus = async () => {
+  if (!paymentOrderId.value) return
+  const { data } = await orderApi.getByOrderId(paymentOrderId.value)
+  paymentStatus.value = data?.status || paymentStatus.value
+}
+
+const payCurrentOrder = async () => {
+  if (!paymentOrderId.value) return
+  processingPayment.value = true
+  try {
+    await orderApi.pay(paymentOrderId.value)
+    ElMessage.success('支付请求已发送，正在确认结果')
+
+    for (let index = 0; index < 6; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      await refreshCurrentOrderStatus()
+      if (paymentStatus.value === 'PAID' || paymentStatus.value === 'PAY_FAILED' || paymentStatus.value === 'CANCELLED') {
+        break
+      }
+    }
+
+    if (paymentStatus.value === 'PAID') {
+      ElMessage.success('支付成功')
+      orderMessage.value = `订单 ${paymentOrderId.value} 支付成功。`
+      paymentDialogVisible.value = false
+    } else if (paymentStatus.value === 'PAY_FAILED') {
+      ElMessage.error('支付失败，请重试')
+      orderMessage.value = `订单 ${paymentOrderId.value} 支付失败。`
+    } else if (paymentStatus.value === 'CANCELLED') {
+      ElMessage.warning('订单已取消')
+      orderMessage.value = `订单 ${paymentOrderId.value} 已取消。`
+      paymentDialogVisible.value = false
+    } else {
+      ElMessage.info('支付结果处理中，可在我的订单中查看')
+      orderMessage.value = `订单 ${paymentOrderId.value} 支付处理中。`
+    }
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '发起支付失败')
+  } finally {
+    processingPayment.value = false
+  }
+}
+
+const cancelCurrentOrder = async () => {
+  if (!paymentOrderId.value) return
+  processingPayment.value = true
+  try {
+    await orderApi.cancel(paymentOrderId.value)
+    paymentStatus.value = 'CANCELLED'
+    paymentDialogVisible.value = false
+    orderMessage.value = `订单 ${paymentOrderId.value} 已取消，库存已回补。`
+    ElMessage.success('订单已取消')
+    await loadDetail()
+  } catch (err) {
+    ElMessage.error(err?.response?.data?.message || '取消订单失败')
+  } finally {
+    processingPayment.value = false
   }
 }
 
@@ -422,6 +532,22 @@ onMounted(loadDetail)
   margin: 8px 0 0;
   color: var(--ink-1);
   font-size: 13px;
+}
+
+.pay-modal-content {
+  display: grid;
+  gap: 8px;
+  color: var(--ink-2);
+}
+
+.pay-modal-content p {
+  margin: 0;
+}
+
+.pay-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 @media (max-width: 960px) {

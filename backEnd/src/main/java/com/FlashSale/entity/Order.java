@@ -7,7 +7,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 import lombok.Data;
 import org.hibernate.annotations.CreationTimestamp;
 
@@ -19,9 +18,6 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "orders",
-        uniqueConstraints = {
-                @UniqueConstraint(name = "uk_orders_user_product", columnNames = {"user_id", "product_id"})
-        },
         indexes = {
                 @Index(name = "idx_orders_user_id", columnList = "user_id"),
                 @Index(name = "idx_orders_product_id", columnList = "product_id")

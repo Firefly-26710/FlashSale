@@ -9,12 +9,14 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 // 秒杀订单服务：负责Redis原子扣减、Kafka投递、订单查询。
@@ -23,6 +25,7 @@ public class SeckillOrderService {
     private static final String STOCK_KEY_PREFIX = "seckill:stock:";
     private static final String USER_SET_KEY_PREFIX = "seckill:users:";
     private static final String STOCK_INIT_LOCK_PREFIX = "seckill:stock:init:lock:";
+    private static final String PAYMENT_REQUEST_KEY_PREFIX = "order:payment:request:";
 
     private static final Long SUCCESS_CODE = 1L;
     private static final Long SOLD_OUT_CODE = 0L;
@@ -39,7 +42,7 @@ public class SeckillOrderService {
                         "end " +
                         "local stock = redis.call('get', KEYS[1]) " +
                         "if (not stock) then return -3 end " +
-                        "if (tonumber(stock) <= 0) then return 0 end " +
+                    "if (tonumber(stock) < tonumber(ARGV[2])) then return 0 end " +
                         "redis.call('decrby', KEYS[1], ARGV[2]) " +
                         "redis.call('sadd', KEYS[2], ARGV[1]) " +
                         "return 1"
@@ -51,16 +54,19 @@ public class SeckillOrderService {
     private final ProductRepository productRepository;
     private final OrderRepository orderRepository;
     private final SnowflakeIdService snowflakeIdService;
-    private final KafkaTemplate<String, SeckillOrderMessage> kafkaTemplate;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
 
     @Value("${flashsale.seckill.kafka.topic:flashsale.order.create}")
     private String seckillTopic;
+
+    @Value("${flashsale.payment.kafka.request-topic:flashsale.order.payment.request}")
+    private String paymentRequestTopic;
 
     public SeckillOrderService(StringRedisTemplate redisTemplate,
                                ProductRepository productRepository,
                                OrderRepository orderRepository,
                                SnowflakeIdService snowflakeIdService,
-                               KafkaTemplate<String, SeckillOrderMessage> kafkaTemplate) {
+                               KafkaTemplate<String, Object> kafkaTemplate) {
         this.redisTemplate = redisTemplate;
         this.productRepository = productRepository;
         this.orderRepository = orderRepository;
@@ -137,6 +143,97 @@ public class SeckillOrderService {
     // 按用户查询订单列表。
     public List<Order> queryByUserId(Integer userId) {
         return orderRepository.findByUserIdOrderByCreatedAtDesc(userId);
+    }
+
+    // 发起模拟支付：通过消息请求支付服务，回调再异步更新订单状态。
+    public Map<String, Object> requestPayment(Long orderId, Integer userId) {
+        if (orderId == null || userId == null) {
+            return Map.of("success", false, "message", "参数非法");
+        }
+
+        Optional<Order> orderOpt = orderRepository.findById(orderId);
+        if (orderOpt.isEmpty()) {
+            return Map.of("success", false, "message", "订单不存在");
+        }
+
+        Order order = orderOpt.get();
+        if (!userId.equals(order.getUserId())) {
+            return Map.of("success", false, "message", "无权限操作该订单");
+        }
+
+        if ("PAID".equals(order.getStatus())) {
+            return Map.of("success", true, "message", "订单已支付", "orderId", String.valueOf(order.getId()));
+        }
+
+        if (!"PENDING_PAYMENT".equals(order.getStatus())) {
+            return Map.of("success", false, "message", "当前订单状态不允许支付");
+        }
+
+        String requestLockKey = PAYMENT_REQUEST_KEY_PREFIX + orderId;
+        Boolean freshRequest = redisTemplate.opsForValue().setIfAbsent(requestLockKey, "1", Duration.ofSeconds(5));
+        if (!Boolean.TRUE.equals(freshRequest)) {
+            return Map.of("success", false, "message", "支付请求处理中，请稍后查询订单状态");
+        }
+
+        PaymentRequestMessage message = new PaymentRequestMessage();
+        message.setOrderId(order.getId());
+        message.setUserId(order.getUserId());
+        message.setAmount(order.getAmount());
+        message.setRequestId(UUID.randomUUID().toString());
+
+        kafkaTemplate.send(paymentRequestTopic, String.valueOf(order.getId()), message)
+                .whenComplete((sendResult, throwable) -> {
+                    if (throwable != null) {
+                        redisTemplate.delete(requestLockKey);
+                    }
+                });
+
+        return Map.of(
+                "success", true,
+                "message", "支付请求已受理",
+                "orderId", String.valueOf(order.getId()),
+                "status", "PENDING_PAYMENT"
+        );
+    }
+
+    // 取消待支付订单：回补DB与Redis库存，同时释放用户限购标记。
+    @Transactional
+    public Map<String, Object> cancelPendingOrder(Long orderId, Integer userId) {
+        if (orderId == null || userId == null) {
+            return Map.of("success", false, "message", "参数非法");
+        }
+
+        Optional<Order> orderOpt = orderRepository.findById(orderId);
+        if (orderOpt.isEmpty()) {
+            return Map.of("success", false, "message", "订单不存在");
+        }
+
+        Order order = orderOpt.get();
+        if (!userId.equals(order.getUserId())) {
+            return Map.of("success", false, "message", "无权限操作该订单");
+        }
+
+        if ("CANCELLED".equals(order.getStatus())) {
+            return Map.of("success", true, "message", "订单已取消", "orderId", String.valueOf(order.getId()), "status", "CANCELLED");
+        }
+
+        if (!"PENDING_PAYMENT".equals(order.getStatus())) {
+            return Map.of("success", false, "message", "当前订单状态不允许取消");
+        }
+
+        int changed = orderRepository.updateStatusIfCurrent(order.getId(), "PENDING_PAYMENT", "CANCELLED");
+        if (changed <= 0) {
+            return Map.of("success", false, "message", "订单状态已变化，请刷新后重试");
+        }
+
+        int quantity = order.getQuantity() == null || order.getQuantity() <= 0 ? 1 : order.getQuantity();
+        productRepository.increaseStock(order.getProductId(), quantity);
+
+        redisTemplate.opsForValue().increment(STOCK_KEY_PREFIX + order.getProductId(), quantity);
+        redisTemplate.opsForSet().remove(USER_SET_KEY_PREFIX + order.getProductId(), String.valueOf(order.getUserId()));
+        redisTemplate.delete(PAYMENT_REQUEST_KEY_PREFIX + order.getId());
+
+        return Map.of("success", true, "message", "订单已取消", "orderId", String.valueOf(order.getId()), "status", "CANCELLED");
     }
 
     // 预加载 Redis 库存，避免首次请求打到数据库。

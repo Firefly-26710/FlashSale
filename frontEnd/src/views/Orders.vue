@@ -23,7 +23,7 @@
         <div v-if="queriedOrder" class="order-card highlighted">
           <div class="highlighted-head">
             <h4>{{ getProductName(queriedOrder.productId) }}</h4>
-            <el-tag type="success" effect="light">{{ formatStatus(queriedOrder.status) }}</el-tag>
+            <el-tag :type="getStatusTagType(queriedOrder.status)" effect="light">{{ formatStatus(queriedOrder.status) }}</el-tag>
           </div>
           <div class="order-kv-grid">
             <p><span>订单号</span>{{ queriedOrder.id }}</p>
@@ -32,6 +32,16 @@
           </div>
           <div class="query-actions">
             <el-button size="small" @click="goProductDetail(queriedOrder.productId)">查看商品</el-button>
+            <el-button
+              v-if="canPay(queriedOrder.status)"
+              size="small"
+              type="primary"
+              class="brand-btn"
+              :loading="payingOrderId === String(queriedOrder.id)"
+              @click="payOrder(queriedOrder.id)"
+            >
+              模拟支付
+            </el-button>
           </div>
         </div>
       </section>
@@ -59,6 +69,16 @@
             </div>
             <div class="order-actions">
               <el-button size="small" @click="goProductDetail(item.productId)">查看商品</el-button>
+              <el-button
+                v-if="canPay(item.status)"
+                size="small"
+                type="primary"
+                class="brand-btn"
+                :loading="payingOrderId === String(item.id)"
+                @click="payOrder(item.id)"
+              >
+                模拟支付
+              </el-button>
             </div>
           </article>
         </div>
@@ -85,6 +105,7 @@ const loadingOrders = ref(false)
 const loadingOrderById = ref(false)
 const queryOrderId = ref('')
 const queriedOrder = ref(null)
+const payingOrderId = ref('')
 const fallbackImage = 'https://picsum.photos/seed/order-product/400/260'
 
 // 从 token 同步用户ID，避免 localStorage 中 userId 缺失或过期导致“我的订单”为空。
@@ -174,8 +195,36 @@ const getProductImage = (productId) => {
 
 const formatStatus = (status) => {
   if (status === 'SUCCESS') return '下单成功'
+  if (status === 'PENDING_PAYMENT') return '待支付'
+  if (status === 'PAID') return '已支付'
+  if (status === 'PAY_FAILED') return '支付失败'
+  if (status === 'CANCELLED') return '已取消'
   if (status === 'PENDING') return '处理中'
   return '未知状态'
+}
+
+const getStatusTagType = (status) => {
+  if (status === 'PAID') return 'success'
+  if (status === 'PENDING_PAYMENT') return 'warning'
+  if (status === 'PAY_FAILED') return 'danger'
+  if (status === 'CANCELLED') return 'info'
+  return 'info'
+}
+
+const canPay = (status) => status === 'PENDING_PAYMENT'
+
+const payOrder = async (orderId) => {
+  const id = String(orderId)
+  payingOrderId.value = id
+  try {
+    await orderApi.pay(id)
+    ElMessage.success('支付请求已受理，请稍后刷新查看结果')
+    await Promise.all([loadMyOrders(), queryOrderId.value.trim() === id ? queryOrderById() : Promise.resolve()])
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.message || '发起支付失败')
+  } finally {
+    payingOrderId.value = ''
+  }
 }
 
 const formatTime = (time) => {

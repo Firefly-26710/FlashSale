@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS `orders` (
 	`status` VARCHAR(32) NOT NULL,
 	`created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (`id`),
-	UNIQUE KEY `uk_orders_user_product` (`user_id`, `product_id`),
+	KEY `idx_orders_user_product` (`user_id`, `product_id`),
 	KEY `idx_orders_user_id` (`user_id`),
 	KEY `idx_orders_product_id` (`product_id`),
 	CONSTRAINT `fk_orders_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS `orders_0` (
 	`status` VARCHAR(32) NOT NULL,
 	`created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (`id`),
-	UNIQUE KEY `uk_orders_0_user_product` (`user_id`, `product_id`),
+	KEY `idx_orders_0_user_product` (`user_id`, `product_id`),
 	KEY `idx_orders_0_user_id` (`user_id`),
 	KEY `idx_orders_0_product_id` (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS `orders_1` (
 	`status` VARCHAR(32) NOT NULL,
 	`created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (`id`),
-	UNIQUE KEY `uk_orders_1_user_product` (`user_id`, `product_id`),
+	KEY `idx_orders_1_user_product` (`user_id`, `product_id`),
 	KEY `idx_orders_1_user_id` (`user_id`),
 	KEY `idx_orders_1_product_id` (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS `orders_0` (
 	`status` VARCHAR(32) NOT NULL,
 	`created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (`id`),
-	UNIQUE KEY `uk_orders_0_user_product` (`user_id`, `product_id`),
+	KEY `idx_orders_0_user_product` (`user_id`, `product_id`),
 	KEY `idx_orders_0_user_id` (`user_id`),
 	KEY `idx_orders_0_product_id` (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS `orders_1` (
 	`status` VARCHAR(32) NOT NULL,
 	`created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY (`id`),
-	UNIQUE KEY `uk_orders_1_user_product` (`user_id`, `product_id`),
+	KEY `idx_orders_1_user_product` (`user_id`, `product_id`),
 	KEY `idx_orders_1_user_id` (`user_id`),
 	KEY `idx_orders_1_product_id` (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

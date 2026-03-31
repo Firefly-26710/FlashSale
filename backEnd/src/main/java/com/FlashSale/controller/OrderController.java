@@ -72,4 +72,36 @@ public class OrderController {
             return ResponseEntity.badRequest().body(Map.of("message", "用户身份无效"));
         }
     }
+
+    // 模拟支付接口：只发起支付请求消息，不直接改订单状态。
+    @PostMapping("/{orderId}/pay")
+    public ResponseEntity<?> payOrder(@PathVariable Long orderId,
+                                      @RequestHeader("Authorization") String authorization) {
+        try {
+            Integer userId = JwtUtil.validateToken(authorization.replace("Bearer ", ""));
+            Map<String, Object> result = seckillOrderService.requestPayment(orderId, userId);
+            if (Boolean.TRUE.equals(result.get("success"))) {
+                return ResponseEntity.accepted().body(result);
+            }
+            return ResponseEntity.badRequest().body(result);
+        } catch (Exception exception) {
+            return ResponseEntity.badRequest().body(Map.of("success", false, "message", "用户身份无效"));
+        }
+    }
+
+    // 取消待支付订单并回补库存。
+    @PostMapping("/{orderId}/cancel")
+    public ResponseEntity<?> cancelOrder(@PathVariable Long orderId,
+                                         @RequestHeader("Authorization") String authorization) {
+        try {
+            Integer userId = JwtUtil.validateToken(authorization.replace("Bearer ", ""));
+            Map<String, Object> result = seckillOrderService.cancelPendingOrder(orderId, userId);
+            if (Boolean.TRUE.equals(result.get("success"))) {
+                return ResponseEntity.ok(result);
+            }
+            return ResponseEntity.badRequest().body(result);
+        } catch (Exception exception) {
+            return ResponseEntity.badRequest().body(Map.of("success", false, "message", "用户身份无效"));
+        }
+    }
 }
