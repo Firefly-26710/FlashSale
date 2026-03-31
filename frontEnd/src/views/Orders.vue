@@ -48,15 +48,32 @@
 
       <section class="list-box glass">
         <div class="list-header">
-          <h3>我的全部订单</h3>
-          <p>共 {{ orders.length }} 条</p>
+          <h3>我的订单</h3>
+          <p>共 {{ filteredOrders.length }} 条 / 总 {{ orders.length }} 条</p>
+        </div>
+
+        <div class="filter-row">
+          <span class="filter-label">订单状态</span>
+          <el-radio-group v-model="activeStatus" size="small">
+            <el-radio-button
+              v-for="option in statusOptions"
+              :key="option.value"
+              :label="option.value"
+            >
+              {{ option.label }}
+              <span class="filter-count">
+                {{ option.value === 'ALL' ? orders.length : statusCounts[option.value] || 0 }}
+              </span>
+            </el-radio-button>
+          </el-radio-group>
         </div>
 
         <div v-if="loadingOrders" class="status-row">订单加载中...</div>
         <div v-else-if="orders.length === 0" class="status-row">暂无订单，快去秒杀商品吧</div>
+        <div v-else-if="filteredOrders.length === 0" class="status-row">该状态下暂无订单</div>
 
         <div v-else class="order-list">
-          <article class="order-card" v-for="item in orders" :key="item.id">
+          <article class="order-card" v-for="item in filteredOrders" :key="item.id">
             <div class="order-top">
               <img class="product-cover" :src="getProductImage(item.productId)" :alt="getProductName(item.productId)" />
               <div class="order-main">
@@ -69,7 +86,7 @@
             </div>
             <div class="order-actions">
               <el-button size="small" @click="goProductDetail(item.productId)">查看商品</el-button>
-              <el-button
+                <el-button
                 v-if="canPay(item.status)"
                 size="small"
                 type="primary"
@@ -88,7 +105,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
@@ -106,7 +123,34 @@ const loadingOrderById = ref(false)
 const queryOrderId = ref('')
 const queriedOrder = ref(null)
 const payingOrderId = ref('')
+const activeStatus = ref('ALL')
 const fallbackImage = 'https://picsum.photos/seed/order-product/400/260'
+
+const statusOptions = [
+  { label: '全部', value: 'ALL' },
+  { label: '待支付', value: 'PENDING_PAYMENT' },
+  { label: '已支付', value: 'PAID' },
+  { label: '下单成功', value: 'SUCCESS' },
+  { label: '支付失败', value: 'PAY_FAILED' },
+  { label: '已取消', value: 'CANCELLED' },
+  { label: '处理中', value: 'PENDING' },
+]
+
+const statusCounts = computed(() => {
+  const counts = {}
+  for (const item of orders.value) {
+    const status = item?.status || 'UNKNOWN'
+    counts[status] = (counts[status] || 0) + 1
+  }
+  return counts
+})
+
+const filteredOrders = computed(() => {
+  if (activeStatus.value === 'ALL') {
+    return orders.value
+  }
+  return orders.value.filter((item) => item.status === activeStatus.value)
+})
 
 // 从 token 同步用户ID，避免 localStorage 中 userId 缺失或过期导致“我的订单”为空。
 const ensureUserId = async () => {
@@ -350,6 +394,25 @@ onMounted(async () => {
 .list-header p {
   margin: 0;
   color: var(--ink-2);
+}
+
+.filter-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.filter-label {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.filter-count {
+  margin-left: 6px;
+  color: var(--ink-2);
+  font-size: 12px;
 }
 
 .status-row {

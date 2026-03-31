@@ -24,6 +24,17 @@ docker compose ps
 docker compose down
 ```
 
+## 1.2 后端服务角色
+
+- `backend1` / `backend2`：核心后端（core-service），提供登录、商品查询、搜索、缓存与限流。
+- `order-service`：订单微服务，处理秒杀下单、订单查询与支付模拟。
+- `inventory-service`：库存微服务，负责库存预占、库存回补与 Redis 秒杀库存维护。
+
+Nginx 路由：
+
+- `/api/orders/**` -> `order-service`
+- 其他 `/api/**` -> `backend1` / `backend2` 负载均衡
+
 ### 1.1 改代码后，确保服务是最新版
 
 全量重建（推荐）：
@@ -35,7 +46,7 @@ docker compose up -d --build --force-recreate
 仅前后端重建（更快）：
 
 ```bash
-docker compose up -d --build --force-recreate backend1 backend2 frontend
+docker compose up -d --build --force-recreate backend1 backend2 order-service inventory-service frontend
 ```
 
 只改单个服务时，将服务名替换为目标服务（如 `backend1`、`frontend`）。
@@ -56,6 +67,8 @@ docker compose logs -f mysql-replica
 docker compose logs -f proxysql
 docker compose logs -f backend1
 docker compose logs -f backend2
+docker compose logs -f order-service
+docker compose logs -f inventory-service
 docker compose logs -f frontend
 ```
 
@@ -96,8 +109,10 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 ## 4. 常用地址
 
 - 前端入口：`http://localhost`（默认 `80`）
-- 后端实例1：`http://localhost:8081`
-- 后端实例2：`http://localhost:8082`
+- 后端实例1（core-service）：`http://localhost:8081`
+- 后端实例2（core-service）：`http://localhost:8082`
+- 订单服务（order-service）：`http://localhost:8083`
+- 库存服务（inventory-service）：`http://localhost:8084`
 - MySQL 主库：`localhost:3307`
 - MySQL 从库：`localhost:3308`
 - ProxySQL 数据端口：`localhost:6033`
@@ -163,7 +178,7 @@ docker compose exec backend2 printenv | Select-String "SPRING_DATASOURCE_URL"
 
 分片物理表初始化脚本：
 
-- `backEnd/src/main/resources/init.sql`
+- `backEnd/core-service/src/main/resources/init.sql`
 
 ### 7.1 模式切换后秒杀一致性（避免“看不到旧订单/不能重秒”）
 

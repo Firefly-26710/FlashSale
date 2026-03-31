@@ -1,60 +1,33 @@
 package com.FlashSale.Service;
 
+import com.FlashSale.Common.InventoryReserveRequest;
+import com.FlashSale.Common.InventoryReserveResponse;
+import com.FlashSale.Common.InventoryRestoreRequest;
 import com.FlashSale.Entity.Order;
-import com.FlashSale.Entity.Product;
 import com.FlashSale.Repository.OrderRepository;
-import com.FlashSale.Repository.ProductRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 @Service
-// 秒杀订单服务：负责Redis原子扣减、Kafka投递、订单查询。
+// 秒杀订单服务：负责库存预占、Kafka投递、订单查询。
 public class SeckillOrderService {
 
-    private static final String STOCK_KEY_PREFIX = "seckill:stock:";
-    private static final String USER_SET_KEY_PREFIX = "seckill:users:";
-    private static final String STOCK_INIT_LOCK_PREFIX = "seckill:stock:init:lock:";
     private static final String PAYMENT_REQUEST_KEY_PREFIX = "order:payment:request:";
 
-    private static final Long SUCCESS_CODE = 1L;
-    private static final Long SOLD_OUT_CODE = 0L;
-    private static final Long DUPLICATE_CODE = -2L;
-    private static final Long STOCK_NOT_INIT_CODE = -3L;
-
-    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
-
-    static {
-        SECKILL_SCRIPT = new DefaultRedisScript<>();
-        SECKILL_SCRIPT.setScriptText(
-                "if redis.call('sismember', KEYS[2], ARGV[1]) == 1 then " +
-                        "return -2 " +
-                        "end " +
-                        "local stock = redis.call('get', KEYS[1]) " +
-                        "if (not stock) then return -3 end " +
-                    "if (tonumber(stock) < tonumber(ARGV[2])) then return 0 end " +
-                        "redis.call('decrby', KEYS[1], ARGV[2]) " +
-                        "redis.call('sadd', KEYS[2], ARGV[1]) " +
-                        "return 1"
-        );
-        SECKILL_SCRIPT.setResultType(Long.class);
-    }
-
     private final StringRedisTemplate redisTemplate;
-    private final ProductRepository productRepository;
     private final OrderRepository orderRepository;
     private final SnowflakeIdService snowflakeIdService;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final InventoryClient inventoryClient;
 
     @Value("${flashsale.seckill.kafka.topic:flashsale.order.create}")
     private String seckillTopic;
@@ -63,52 +36,32 @@ public class SeckillOrderService {
     private String paymentRequestTopic;
 
     public SeckillOrderService(StringRedisTemplate redisTemplate,
-                               ProductRepository productRepository,
                                OrderRepository orderRepository,
                                SnowflakeIdService snowflakeIdService,
-                               KafkaTemplate<String, Object> kafkaTemplate) {
+                               KafkaTemplate<String, Object> kafkaTemplate,
+                               InventoryClient inventoryClient) {
         this.redisTemplate = redisTemplate;
-        this.productRepository = productRepository;
         this.orderRepository = orderRepository;
         this.snowflakeIdService = snowflakeIdService;
         this.kafkaTemplate = kafkaTemplate;
+        this.inventoryClient = inventoryClient;
     }
 
-    // 秒杀入口：先在 Redis 做原子扣减 + 去重，再异步投递 Kafka 创建订单。
+    // 秒杀入口：先请求库存服务预占，再异步投递 Kafka 创建订单。
     public Map<String, Object> createSeckillOrder(Integer userId, Integer productId) {
         if (userId == null || userId <= 0 || productId == null || productId <= 0) {
             return Map.of("success", false, "message", "参数非法");
         }
 
-        ensureStockLoaded(productId);
+        InventoryReserveRequest reserveRequest = new InventoryReserveRequest();
+        reserveRequest.setUserId(userId);
+        reserveRequest.setProductId(productId);
+        reserveRequest.setQuantity(1);
 
-        String stockKey = STOCK_KEY_PREFIX + productId;
-        String userSetKey = USER_SET_KEY_PREFIX + productId;
-
-        Long result = redisTemplate.execute(
-                SECKILL_SCRIPT,
-                Arrays.asList(stockKey, userSetKey),
-                String.valueOf(userId),
-                "1"
-        );
-
-        if (DUPLICATE_CODE.equals(result)) {
-            return Map.of("success", false, "message", "请勿重复下单");
-        }
-        if (SOLD_OUT_CODE.equals(result)) {
-            return Map.of("success", false, "message", "库存不足");
-        }
-        if (STOCK_NOT_INIT_CODE.equals(result)) {
-            return Map.of("success", false, "message", "库存初始化失败，请稍后重试");
-        }
-        if (!SUCCESS_CODE.equals(result)) {
-            return Map.of("success", false, "message", "系统繁忙，请稍后重试");
-        }
-
-        Optional<Product> productOpt = productRepository.findById(productId);
-        if (productOpt.isEmpty()) {
-            rollbackRedisDeduction(productId, userId);
-            return Map.of("success", false, "message", "商品不存在");
+        InventoryReserveResponse reserveResponse = inventoryClient.reserve(reserveRequest);
+        if (reserveResponse == null || !reserveResponse.isSuccess()) {
+            String message = reserveResponse == null ? "库存服务不可用" : reserveResponse.getMessage();
+            return Map.of("success", false, "message", message == null ? "库存预占失败" : message);
         }
 
         long orderId = snowflakeIdService.nextId();
@@ -118,13 +71,16 @@ public class SeckillOrderService {
         message.setUserId(userId);
         message.setProductId(productId);
         message.setQuantity(1);
-        message.setAmount(productOpt.get().getPrice());
+        message.setAmount(reserveResponse.getPrice());
 
         kafkaTemplate.send(seckillTopic, String.valueOf(orderId), message)
                 .whenComplete((sendResult, throwable) -> {
                     if (throwable != null) {
-                        // Kafka投递失败时回滚Redis预扣，避免库存丢失。
-                        rollbackRedisDeduction(productId, userId);
+                        InventoryRestoreRequest restoreRequest = new InventoryRestoreRequest();
+                        restoreRequest.setUserId(userId);
+                        restoreRequest.setProductId(productId);
+                        restoreRequest.setQuantity(1);
+                        inventoryClient.restore(restoreRequest);
                     }
                 });
 
@@ -196,7 +152,7 @@ public class SeckillOrderService {
         );
     }
 
-    // 取消待支付订单：回补DB与Redis库存，同时释放用户限购标记。
+    // 取消待支付订单：回补库存并释放用户限购标记。
     @Transactional
     public Map<String, Object> cancelPendingOrder(Long orderId, Integer userId) {
         if (orderId == null || userId == null) {
@@ -227,54 +183,14 @@ public class SeckillOrderService {
         }
 
         int quantity = order.getQuantity() == null || order.getQuantity() <= 0 ? 1 : order.getQuantity();
-        productRepository.increaseStock(order.getProductId(), quantity);
-
-        redisTemplate.opsForValue().increment(STOCK_KEY_PREFIX + order.getProductId(), quantity);
-        redisTemplate.opsForSet().remove(USER_SET_KEY_PREFIX + order.getProductId(), String.valueOf(order.getUserId()));
         redisTemplate.delete(PAYMENT_REQUEST_KEY_PREFIX + order.getId());
 
+        InventoryRestoreRequest restoreRequest = new InventoryRestoreRequest();
+        restoreRequest.setUserId(order.getUserId());
+        restoreRequest.setProductId(order.getProductId());
+        restoreRequest.setQuantity(quantity);
+        inventoryClient.restore(restoreRequest);
+
         return Map.of("success", true, "message", "订单已取消", "orderId", String.valueOf(order.getId()), "status", "CANCELLED");
-    }
-
-    // 预加载 Redis 库存，避免首次请求打到数据库。
-    public void preloadAllStockToRedis() {
-        List<Product> products = productRepository.findAll();
-        for (Product product : products) {
-            redisTemplate.opsForValue().set(
-                    STOCK_KEY_PREFIX + product.getId(),
-                    String.valueOf(Math.max(product.getStock(), 0))
-            );
-        }
-    }
-
-    // 单商品库存懒加载：仅当Redis库存不存在时回源数据库。
-    private void ensureStockLoaded(Integer productId) {
-        String stockKey = STOCK_KEY_PREFIX + productId;
-        String stock = redisTemplate.opsForValue().get(stockKey);
-        if (stock != null) {
-            return;
-        }
-
-        String lockKey = STOCK_INIT_LOCK_PREFIX + productId;
-        Boolean locked = redisTemplate.opsForValue().setIfAbsent(lockKey, "1", Duration.ofSeconds(3));
-        if (!Boolean.TRUE.equals(locked)) {
-            return;
-        }
-
-        try {
-            Product product = productRepository.findById(productId).orElse(null);
-            int safeStock = product == null ? 0 : Math.max(product.getStock(), 0);
-            redisTemplate.opsForValue().set(stockKey, String.valueOf(safeStock));
-        } finally {
-            redisTemplate.delete(lockKey);
-        }
-    }
-
-    // 极端场景兜底补偿：回滚 Redis 预扣库存与用户标记。
-    private void rollbackRedisDeduction(Integer productId, Integer userId) {
-        String stockKey = STOCK_KEY_PREFIX + productId;
-        String userSetKey = USER_SET_KEY_PREFIX + productId;
-        redisTemplate.opsForValue().increment(stockKey);
-        redisTemplate.opsForSet().remove(userSetKey, String.valueOf(userId));
     }
 }
