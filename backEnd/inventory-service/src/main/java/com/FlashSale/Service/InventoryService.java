@@ -64,6 +64,8 @@ public class InventoryService {
             return response;
         }
 
+        response.setOrderId(request.getOrderId());
+
         int quantity = request.getQuantity() == null || request.getQuantity() <= 0 ? 1 : request.getQuantity();
         Integer productId = request.getProductId();
         Integer userId = request.getUserId();

@@ -46,6 +46,14 @@ public class OrderController {
             Integer userId = JwtUtil.validateToken(authorization.replace("Bearer ", ""));
             Optional<Order> orderOpt = seckillOrderService.queryByOrderId(orderId);
             if (orderOpt.isEmpty()) {
+                Optional<Map<String, Object>> statusOpt = seckillOrderService.queryOrderStatus(orderId, userId);
+                if (statusOpt.isPresent()) {
+                    Map<String, Object> status = statusOpt.get();
+                    if ("FORBIDDEN".equals(status.get("status"))) {
+                        return ResponseEntity.status(403).body(Map.of("message", status.get("message")));
+                    }
+                    return ResponseEntity.ok(status);
+                }
                 return ResponseEntity.status(404).body(Map.of("message", "订单不存在"));
             }
             if (!userId.equals(orderOpt.get().getUserId())) {

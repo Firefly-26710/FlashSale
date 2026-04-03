@@ -34,5 +34,4 @@ rules:
           algorithm-expression: orders_${id % 2}
   - !SINGLE
     tables:
-      - ds0.user
-      - ds0.product
+      - ds0.order_outbox

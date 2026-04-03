@@ -69,6 +69,25 @@ services:
       - ./infra/mysql/init-replication.sh:/init-replication.sh:ro
     command: ["sh", "/init-replication.sh"]
 
+  mysql-inventory:
+    image: ${MYSQL_IMAGE:-mysql:8.0}
+    container_name: flashsale-mysql-inventory
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: ${INVENTORY_DB_NAME:-FlashSale}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${MYSQL_INVENTORY_PORT:-3310}:3306"
+    volumes:
+      - mysql_inventory_data:/var/lib/mysql
+      - ./infra/mysql/init-inventory.sql:/docker-entrypoint-initdb.d/init-inventory.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   redis:
     image: ${REDIS_IMAGE:-docker.m.daocloud.io/library/redis:7-alpine}
     container_name: flashsale-redis
@@ -167,8 +186,8 @@ services:
     container_name: flashsale-backend-1
     restart: unless-stopped
     depends_on:
-      shardingsphere-proxy:
-        condition: service_started
+      mysql-inventory:
+        condition: service_healthy
       redis:
         condition: service_healthy
       elasticsearch:
@@ -177,9 +196,9 @@ services:
         condition: service_healthy
     environment:
       SERVER_PORT: ${BACKEND_SERVER_PORT:-6005}
-      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://shardingsphere-proxy:3307/${MYSQL_DATABASE:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
-      SPRING_DATASOURCE_USERNAME: appuser
-      SPRING_DATASOURCE_PASSWORD: app_pass
+      SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+      SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-none}
       SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS: ${SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS:-false}
       SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
@@ -200,8 +219,8 @@ services:
     container_name: flashsale-backend-2
     restart: unless-stopped
     depends_on:
-      shardingsphere-proxy:
-        condition: service_started
+      mysql-inventory:
+        condition: service_healthy
       redis:
         condition: service_healthy
       elasticsearch:
@@ -210,9 +229,9 @@ services:
         condition: service_healthy
     environment:
       SERVER_PORT: ${BACKEND_SERVER_PORT:-6005}
-      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://shardingsphere-proxy:3307/${MYSQL_DATABASE:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
-      SPRING_DATASOURCE_USERNAME: appuser
-      SPRING_DATASOURCE_PASSWORD: app_pass
+      SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+      SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-none}
       SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS: ${SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS:-false}
       SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
@@ -267,7 +286,6 @@ services:
       SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
       SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
-      FLASHSALE_INVENTORY_BASE_URL: ${FLASHSALE_INVENTORY_BASE_URL:-http://inventory-service:6007}
     ports:
       - "${ORDER_SERVICE_HOST_PORT:-8083}:${ORDER_SERVICE_PORT:-6006}"
 
@@ -282,24 +300,28 @@ services:
     container_name: flashsale-inventory-service
     restart: unless-stopped
     depends_on:
-      shardingsphere-proxy:
-        condition: service_started
+      mysql-inventory:
+        condition: service_healthy
       redis:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     environment:
       SERVER_PORT: ${INVENTORY_SERVICE_PORT:-6007}
-      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://shardingsphere-proxy:3307/${MYSQL_DATABASE:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
-      SPRING_DATASOURCE_USERNAME: appuser
-      SPRING_DATASOURCE_PASSWORD: app_pass
+      SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+      SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
       SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-none}
       SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS: ${SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS:-false}
       SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
       SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
     ports:
       - "${INVENTORY_SERVICE_HOST_PORT:-8084}:${INVENTORY_SERVICE_PORT:-6007}"
 
 volumes:
   mysql_primary_data:
   mysql_replica_data:
+  mysql_inventory_data:
   proxysql_data:
   redis_data:

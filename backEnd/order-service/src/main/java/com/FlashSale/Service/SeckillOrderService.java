@@ -1,7 +1,6 @@
 package com.FlashSale.Service;
 
 import com.FlashSale.Common.InventoryReserveRequest;
-import com.FlashSale.Common.InventoryReserveResponse;
 import com.FlashSale.Common.InventoryRestoreRequest;
 import com.FlashSale.Entity.Order;
 import com.FlashSale.Repository.OrderRepository;
@@ -15,36 +14,47 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
 // 秒杀订单服务：负责库存预占、Kafka投递、订单查询。
 public class SeckillOrderService {
 
+    private static final Set<String> ACTIVE_ORDER_STATUSES = Set.of("PENDING_PAYMENT", "PAID", "PAY_FAILED");
     private static final String PAYMENT_REQUEST_KEY_PREFIX = "order:payment:request:";
+    private static final String ORDER_STATUS_KEY_PREFIX = "order:status:";
+    private static final String ORDER_PENDING_KEY_PREFIX = "order:pending:user:";
+    private static final String ORDER_STATUS_FIELD = "status";
+    private static final String ORDER_USER_FIELD = "userId";
+    private static final String ORDER_MESSAGE_FIELD = "message";
+    private static final Duration ORDER_STATUS_TTL = Duration.ofMinutes(15);
 
     private final StringRedisTemplate redisTemplate;
     private final OrderRepository orderRepository;
     private final SnowflakeIdService snowflakeIdService;
     private final KafkaTemplate<String, Object> kafkaTemplate;
-    private final InventoryClient inventoryClient;
-
-    @Value("${flashsale.seckill.kafka.topic:flashsale.order.create}")
-    private String seckillTopic;
+    private final OrderOutboxService outboxService;
 
     @Value("${flashsale.payment.kafka.request-topic:flashsale.order.payment.request}")
     private String paymentRequestTopic;
+
+    @Value("${flashsale.inventory.kafka.reserve-topic:flashsale.inventory.reserve}")
+    private String inventoryReserveTopic;
+
+    @Value("${flashsale.inventory.kafka.restore-topic:flashsale.inventory.restore}")
+    private String inventoryRestoreTopic;
 
     public SeckillOrderService(StringRedisTemplate redisTemplate,
                                OrderRepository orderRepository,
                                SnowflakeIdService snowflakeIdService,
                                KafkaTemplate<String, Object> kafkaTemplate,
-                               InventoryClient inventoryClient) {
+                               OrderOutboxService outboxService) {
         this.redisTemplate = redisTemplate;
         this.orderRepository = orderRepository;
         this.snowflakeIdService = snowflakeIdService;
         this.kafkaTemplate = kafkaTemplate;
-        this.inventoryClient = inventoryClient;
+        this.outboxService = outboxService;
     }
 
     // 秒杀入口：先请求库存服务预占，再异步投递 Kafka 创建订单。
@@ -53,47 +63,71 @@ public class SeckillOrderService {
             return Map.of("success", false, "message", "参数非法");
         }
 
+        if (orderRepository.existsByUserIdAndProductIdAndStatusIn(userId, productId, ACTIVE_ORDER_STATUSES)) {
+            return Map.of("success", false, "message", "已存在有效订单，无法重复秒杀");
+        }
+
+        String pendingKey = buildPendingKey(userId, productId);
+        Boolean pendingLocked = redisTemplate.opsForValue().setIfAbsent(pendingKey, "1", ORDER_STATUS_TTL);
+        if (!Boolean.TRUE.equals(pendingLocked)) {
+            return Map.of("success", false, "message", "已有订单处理中，请稍后再试");
+        }
+
+        long orderId = snowflakeIdService.nextId();
+        storeOrderStatus(orderId, userId, "PENDING", "秒杀请求已受理");
+
         InventoryReserveRequest reserveRequest = new InventoryReserveRequest();
+        reserveRequest.setOrderId(orderId);
         reserveRequest.setUserId(userId);
         reserveRequest.setProductId(productId);
         reserveRequest.setQuantity(1);
 
-        InventoryReserveResponse reserveResponse = inventoryClient.reserve(reserveRequest);
-        if (reserveResponse == null || !reserveResponse.isSuccess()) {
-            String message = reserveResponse == null ? "库存服务不可用" : reserveResponse.getMessage();
-            return Map.of("success", false, "message", message == null ? "库存预占失败" : message);
+        try {
+            outboxService.enqueue(inventoryReserveTopic, String.valueOf(orderId), reserveRequest);
+        } catch (Exception exception) {
+            storeOrderStatus(orderId, userId, "FAILED", "库存请求失败，请稍后重试");
+            redisTemplate.delete(pendingKey);
+            return Map.of("success", false, "message", "库存请求失败，请稍后重试");
         }
-
-        long orderId = snowflakeIdService.nextId();
-
-        SeckillOrderMessage message = new SeckillOrderMessage();
-        message.setOrderId(orderId);
-        message.setUserId(userId);
-        message.setProductId(productId);
-        message.setQuantity(1);
-        message.setAmount(reserveResponse.getPrice());
-
-        kafkaTemplate.send(seckillTopic, String.valueOf(orderId), message)
-                .whenComplete((sendResult, throwable) -> {
-                    if (throwable != null) {
-                        InventoryRestoreRequest restoreRequest = new InventoryRestoreRequest();
-                        restoreRequest.setUserId(userId);
-                        restoreRequest.setProductId(productId);
-                        restoreRequest.setQuantity(1);
-                        inventoryClient.restore(restoreRequest);
-                    }
-                });
 
         return Map.of(
                 "success", true,
                 "message", "秒杀请求已受理",
-            "orderId", String.valueOf(orderId),
+                "orderId", String.valueOf(orderId),
                 "status", "PENDING"
         );
     }
 
     public Optional<Order> queryByOrderId(Long orderId) {
         return orderRepository.findById(orderId);
+    }
+
+    public Optional<Map<String, Object>> queryOrderStatus(Long orderId, Integer userId) {
+        if (orderId == null || userId == null) {
+            return Optional.empty();
+        }
+
+        String key = ORDER_STATUS_KEY_PREFIX + orderId;
+        Object storedUserId = redisTemplate.opsForHash().get(key, ORDER_USER_FIELD);
+        if (storedUserId == null) {
+            return Optional.empty();
+        }
+
+        if (!String.valueOf(userId).equals(String.valueOf(storedUserId))) {
+            return Optional.of(Map.of("status", "FORBIDDEN", "message", "无权限查看该订单"));
+        }
+
+        Object status = redisTemplate.opsForHash().get(key, ORDER_STATUS_FIELD);
+        Object message = redisTemplate.opsForHash().get(key, ORDER_MESSAGE_FIELD);
+        String statusValue = status == null ? "PENDING" : String.valueOf(status);
+        if ("REJECTED".equals(statusValue) || "FAILED".equals(statusValue)) {
+            statusValue = "CANCELLED";
+        }
+        return Optional.of(Map.of(
+                "orderId", String.valueOf(orderId),
+            "status", statusValue,
+                "message", message == null ? "处理中" : String.valueOf(message)
+        ));
     }
 
     // 按用户查询订单列表。
@@ -109,6 +143,16 @@ public class SeckillOrderService {
 
         Optional<Order> orderOpt = orderRepository.findById(orderId);
         if (orderOpt.isEmpty()) {
+            Optional<Map<String, Object>> statusOpt = queryOrderStatus(orderId, userId);
+            if (statusOpt.isPresent()) {
+                Object status = statusOpt.get().get("status");
+                if ("PENDING".equals(status)) {
+                    return Map.of("success", false, "message", "订单处理中，请稍后再试");
+                }
+                if ("CANCELLED".equals(status)) {
+                    return Map.of("success", false, "message", "订单已取消");
+                }
+            }
             return Map.of("success", false, "message", "订单不存在");
         }
 
@@ -137,12 +181,12 @@ public class SeckillOrderService {
         message.setAmount(order.getAmount());
         message.setRequestId(UUID.randomUUID().toString());
 
-        kafkaTemplate.send(paymentRequestTopic, String.valueOf(order.getId()), message)
-                .whenComplete((sendResult, throwable) -> {
-                    if (throwable != null) {
-                        redisTemplate.delete(requestLockKey);
-                    }
-                });
+        try {
+            outboxService.enqueue(paymentRequestTopic, String.valueOf(order.getId()), message);
+        } catch (Exception exception) {
+            redisTemplate.delete(requestLockKey);
+            return Map.of("success", false, "message", "支付请求失败，请稍后重试");
+        }
 
         return Map.of(
                 "success", true,
@@ -161,6 +205,16 @@ public class SeckillOrderService {
 
         Optional<Order> orderOpt = orderRepository.findById(orderId);
         if (orderOpt.isEmpty()) {
+            Optional<Map<String, Object>> statusOpt = queryOrderStatus(orderId, userId);
+            if (statusOpt.isPresent()) {
+                Object status = statusOpt.get().get("status");
+                if ("PENDING".equals(status)) {
+                    return Map.of("success", false, "message", "订单处理中，请稍后再试");
+                }
+                if ("CANCELLED".equals(status)) {
+                    return Map.of("success", false, "message", "订单已取消");
+                }
+            }
             return Map.of("success", false, "message", "订单不存在");
         }
 
@@ -186,11 +240,26 @@ public class SeckillOrderService {
         redisTemplate.delete(PAYMENT_REQUEST_KEY_PREFIX + order.getId());
 
         InventoryRestoreRequest restoreRequest = new InventoryRestoreRequest();
+        restoreRequest.setOrderId(order.getId());
         restoreRequest.setUserId(order.getUserId());
         restoreRequest.setProductId(order.getProductId());
         restoreRequest.setQuantity(quantity);
-        inventoryClient.restore(restoreRequest);
+        kafkaTemplate.send(inventoryRestoreTopic, String.valueOf(order.getId()), restoreRequest);
 
         return Map.of("success", true, "message", "订单已取消", "orderId", String.valueOf(order.getId()), "status", "CANCELLED");
+    }
+
+    private void storeOrderStatus(Long orderId, Integer userId, String status, String message) {
+        String key = ORDER_STATUS_KEY_PREFIX + orderId;
+        redisTemplate.opsForHash().put(key, ORDER_USER_FIELD, String.valueOf(userId));
+        redisTemplate.opsForHash().put(key, ORDER_STATUS_FIELD, status);
+        if (message != null) {
+            redisTemplate.opsForHash().put(key, ORDER_MESSAGE_FIELD, message);
+        }
+        redisTemplate.expire(key, ORDER_STATUS_TTL);
+    }
+
+    private String buildPendingKey(Integer userId, Integer productId) {
+        return ORDER_PENDING_KEY_PREFIX + userId + ":product:" + productId;
     }
 }

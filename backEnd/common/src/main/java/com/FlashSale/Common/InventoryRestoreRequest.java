@@ -1,9 +1,18 @@
 package com.FlashSale.Common;
 
 public class InventoryRestoreRequest {
+    private Long orderId;
     private Integer userId;
     private Integer productId;
     private Integer quantity;
+
+    public Long getOrderId() {
+        return orderId;
+    }
+
+    public void setOrderId(Long orderId) {
+        this.orderId = orderId;
+    }
 
     public Integer getUserId() {
         return userId;

@@ -3,12 +3,21 @@ package com.FlashSale.Common;
 import java.math.BigDecimal;
 
 public class InventoryReserveResponse {
+    private Long orderId;
     private boolean success;
     private String message;
     private Integer productId;
     private Integer userId;
     private Integer quantity;
     private BigDecimal price;
+
+    public Long getOrderId() {
+        return orderId;
+    }
+
+    public void setOrderId(Long orderId) {
+        this.orderId = orderId;
+    }
 
     public boolean isSuccess() {
         return success;
