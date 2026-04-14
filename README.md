@@ -24,17 +24,6 @@ docker compose ps
 docker compose down
 ```
 
-## 1.2 后端服务角色
-
-- `backend1` / `backend2`：核心后端（core-service），提供登录、商品查询、搜索、缓存与限流。
-- `order-service`：订单微服务，处理秒杀下单、订单查询与支付模拟。
-- `inventory-service`：库存微服务，负责库存预占、库存回补与 Redis 秒杀库存维护。
-
-Nginx 路由：
-
-- `/api/orders/**` -> `order-service`
-- 其他 `/api/**` -> `backend1` / `backend2` 负载均衡
-
 ### 1.1 改代码后，确保服务是最新版
 
 全量重建（推荐）：
@@ -46,10 +35,92 @@ docker compose up -d --build --force-recreate
 仅前后端重建（更快）：
 
 ```bash
-docker compose up -d --build --force-recreate backend1 backend2 order-service inventory-service frontend
+docker compose up -d --build --force-recreate backend1 backend2 order-service inventory-service frontend gateway-service
 ```
 
 只改单个服务时，将服务名替换为目标服务（如 `backend1`、`frontend`）。
+
+### 1.2 后端服务角色
+
+- `backend1` / `backend2`：核心后端（core-service），提供登录、商品查询、搜索、缓存与限流。
+- `order-service`：订单微服务，处理秒杀下单、订单查询与支付模拟。
+- `inventory-service`：库存微服务，负责库存预占、库存回补与 Redis 秒杀库存维护。
+- `gateway-service`：Spring Cloud Gateway 网关，通过 Nacos 服务发现动态转发 `/api/**` 请求。
+- `nacos`：服务注册中心 + 配置中心（默认控制台端口 `8848`）。
+
+Nginx 路由：
+
+- `/api/orders/**` -> `order-service`
+- 其他 `/api/**` -> `backend1` / `backend2` 负载均衡
+
+### 1.3 Nacos + Gateway 验证
+
+目标：验证“注册发现、网关路由、动态配置”三件事是否都可用。
+
+说明：当前已加入 `nacos-config-init` 一次性初始化容器，会把以下集中配置自动发布到 Nacos：
+
+- `infra/nacos/config/flashsale-common.properties`
+- `infra/nacos/config/core-service.properties`
+- `infra/nacos/config/order-service.properties`
+- `infra/nacos/config/inventory-service.properties`
+
+启动完成后，访问 Nacos 控制台：
+
+```bash
+http://localhost:8848/nacos
+```
+
+#### 1.3.1 服务注册验证
+
+在 Nacos 服务列表中应看到：
+
+- `core-service`（2 个实例）
+- `order-service`
+- `inventory-service`
+- `gateway-service`
+
+#### 1.3.2 网关动态路由验证
+
+作用：确认请求经过网关后，能按路径正确分发到目标服务。
+
+通过网关地址调用（不直连后端端口）：
+
+```bash
+curl "http://localhost:8080/api/products"
+curl "http://localhost:8080/api/orders/user/1"
+```
+
+预期：
+
+- `/api/products` 被路由到 `core-service`
+- `/api/orders/**` 被路由到 `order-service`（若未带有效 token，可能返回 400/401，属业务鉴权结果）
+
+#### 1.3.3 Nacos 动态配置热更新验证
+
+作用：确认配置变更可“在线生效”，不需要重启服务。
+
+1. 在 Nacos 新建配置：
+
+- Data ID: `core-service.properties`
+- Group: `DEFAULT_GROUP`
+- 内容示例：
+
+```properties
+flashsale.dynamic.message=hello-from-nacos
+```
+
+2. 发布配置后，调用：
+
+```bash
+curl "http://localhost:8080/api/config-demo/message"
+```
+
+3. 修改 `flashsale.dynamic.message` 并再次发布，再次调用上述接口，返回 `message` 会自动变化，无需重启 `core-service`。
+
+说明：
+
+- 如果 `message` 变化了，说明 Nacos 配置中心 + 客户端刷新机制生效。
+- 如果 `message` 不变，优先检查 Data ID、Group、服务名与 `spring.config.import` 是否一致。
 
 ## 2. 日志与结果查看
 
@@ -132,6 +203,8 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-seckill-500-test.p
 ## 4. 常用地址
 
 - 前端入口：`http://localhost`（默认 `80`）
+- 网关（gateway-service）：`http://localhost:8080`
+- Nacos 控制台：`http://localhost:8848/nacos`
 - 后端实例1（core-service）：`http://localhost:8081`
 - 后端实例2（core-service）：`http://localhost:8082`
 - 订单服务（order-service）：`http://localhost:8083`

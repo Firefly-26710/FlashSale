@@ -1,4 +1,38 @@
 services:
+  nacos:
+    image: ${NACOS_IMAGE:-docker.m.daocloud.io/nacos/nacos-server:v2.3.2}
+    container_name: flashsale-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone
+      NACOS_AUTH_ENABLE: "false"
+      JVM_XMS: ${NACOS_JVM_XMS:-256m}
+      JVM_XMX: ${NACOS_JVM_XMX:-512m}
+      JVM_XMN: ${NACOS_JVM_XMN:-128m}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${NACOS_PORT:-8848}:8848"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8848/nacos/v1/console/health/readiness >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  nacos-config-init:
+    image: ${CURL_IMAGE:-docker.m.daocloud.io/curlimages/curl:8.10.1}
+    container_name: flashsale-nacos-config-init
+    restart: "no"
+    depends_on:
+      nacos:
+        condition: service_healthy
+    environment:
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_GROUP: ${NACOS_GROUP:-DEFAULT_GROUP}
+    volumes:
+      - ./infra/nacos/config:/nacos-config:ro
+      - ./infra/nacos/init-config.sh:/init-config.sh:ro
+    entrypoint: ["sh", "/init-config.sh"]
+
   mysql-primary:
     image: ${MYSQL_IMAGE:-mysql:8.0}
     container_name: flashsale-mysql-primary
@@ -133,6 +167,7 @@ services:
       KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
       ALLOW_PLAINTEXT_LISTENER: "yes"
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
     ports:
       - "${KAFKA_PORT:-9092}:9092"
     healthcheck:
@@ -176,16 +211,22 @@ services:
       - ./infra/shardingsphere-proxy/config-flashsale.yaml:/opt/shardingsphere-proxy/conf/config-flashsale.yaml:ro
 
   backend1:
+    image: ${BACKEND_CORE_IMAGE:-flashsale/backend-core:local}
     build:
       context: ./backEnd
       dockerfile: Dockerfile
       args:
         MAVEN_IMAGE: ${MAVEN_IMAGE:-maven:3.9.9-eclipse-temurin-21}
         JRE_IMAGE: ${JRE_IMAGE:-eclipse-temurin:21-jre}
+        MAVEN_OPTS: ${MAVEN_BUILD_OPTS:--Xms128m -Xmx512m -XX:MaxMetaspaceSize=256m}
         SERVICE_MODULE: core-service
     container_name: flashsale-backend-1
     restart: unless-stopped
     depends_on:
+      nacos:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       mysql-inventory:
         condition: service_healthy
       redis:
@@ -196,6 +237,7 @@ services:
         condition: service_healthy
     environment:
       SERVER_PORT: ${BACKEND_SERVER_PORT:-6005}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=60.0}
       SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
       SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
       SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
@@ -205,52 +247,86 @@ services:
       SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
       SPRING_ELASTICSEARCH_URIS: ${SPRING_ELASTICSEARCH_URIS:-http://elasticsearch:9200}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
     ports:
       - "${BACKEND1_HOST_PORT:-8081}:${BACKEND_SERVER_PORT:-6005}"
 
   backend2:
+    image: ${BACKEND_CORE_IMAGE:-flashsale/backend-core:local}
+    pull_policy: never
+    container_name: flashsale-backend-2
+    restart: unless-stopped
+    depends_on:
+      nacos:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      mysql-inventory:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: ${BACKEND_SERVER_PORT:-6005}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=60.0}
+      SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+      SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-none}
+      SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS: ${SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS:-false}
+      SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
+      SPRING_ELASTICSEARCH_URIS: ${SPRING_ELASTICSEARCH_URIS:-http://elasticsearch:9200}
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+    ports:
+      - "${BACKEND2_HOST_PORT:-8082}:${BACKEND_SERVER_PORT:-6005}"
+
+  gateway-service:
     build:
       context: ./backEnd
       dockerfile: Dockerfile
       args:
         MAVEN_IMAGE: ${MAVEN_IMAGE:-maven:3.9.9-eclipse-temurin-21}
         JRE_IMAGE: ${JRE_IMAGE:-eclipse-temurin:21-jre}
-        SERVICE_MODULE: core-service
-    container_name: flashsale-backend-2
+        MAVEN_OPTS: ${MAVEN_BUILD_OPTS:--Xms128m -Xmx512m -XX:MaxMetaspaceSize=256m}
+        SERVICE_MODULE: gateway-service
+    container_name: flashsale-gateway-service
     restart: unless-stopped
     depends_on:
-      mysql-inventory:
+      nacos:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      backend1:
+        condition: service_started
+      backend2:
+        condition: service_started
+      order-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
     environment:
-      SERVER_PORT: ${BACKEND_SERVER_PORT:-6005}
-      SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
-      SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
-      SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
-      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-none}
-      SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS: ${SPRING_JPA_PROPERTIES_HIBERNATE_BOOT_ALLOW_JDBC_METADATA_ACCESS:-false}
-      SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
-      SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
-      SPRING_ELASTICSEARCH_URIS: ${SPRING_ELASTICSEARCH_URIS:-http://elasticsearch:9200}
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      SERVER_PORT: ${GATEWAY_SERVICE_PORT:-8080}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=60.0}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
     ports:
-      - "${BACKEND2_HOST_PORT:-8082}:${BACKEND_SERVER_PORT:-6005}"
+      - "${GATEWAY_SERVICE_HOST_PORT:-8080}:${GATEWAY_SERVICE_PORT:-8080}"
 
   frontend:
     build:
       context: ./frontEnd
       dockerfile: Dockerfile
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:20-alpine}
-        NGINX_IMAGE: ${NGINX_IMAGE:-nginx:1.27-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:20-alpine}
+        NGINX_IMAGE: ${NGINX_IMAGE:-docker.m.daocloud.io/library/nginx:1.27-alpine}
     container_name: flashsale-frontend
     restart: unless-stopped
     depends_on:
+      - gateway-service
       - backend1
       - backend2
       - order-service
@@ -264,10 +340,15 @@ services:
       args:
         MAVEN_IMAGE: ${MAVEN_IMAGE:-maven:3.9.9-eclipse-temurin-21}
         JRE_IMAGE: ${JRE_IMAGE:-eclipse-temurin:21-jre}
+        MAVEN_OPTS: ${MAVEN_BUILD_OPTS:--Xms128m -Xmx512m -XX:MaxMetaspaceSize=256m}
         SERVICE_MODULE: order-service
     container_name: flashsale-order-service
     restart: unless-stopped
     depends_on:
+      nacos:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       shardingsphere-proxy:
         condition: service_started
       redis:
@@ -278,6 +359,7 @@ services:
         condition: service_started
     environment:
       SERVER_PORT: ${ORDER_SERVICE_PORT:-6006}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=60.0}
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:mysql://shardingsphere-proxy:3307/${MYSQL_DATABASE:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
       SPRING_DATASOURCE_USERNAME: appuser
       SPRING_DATASOURCE_PASSWORD: app_pass
@@ -286,6 +368,7 @@ services:
       SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
       SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
     ports:
       - "${ORDER_SERVICE_HOST_PORT:-8083}:${ORDER_SERVICE_PORT:-6006}"
 
@@ -296,10 +379,15 @@ services:
       args:
         MAVEN_IMAGE: ${MAVEN_IMAGE:-maven:3.9.9-eclipse-temurin-21}
         JRE_IMAGE: ${JRE_IMAGE:-eclipse-temurin:21-jre}
+        MAVEN_OPTS: ${MAVEN_BUILD_OPTS:--Xms128m -Xmx512m -XX:MaxMetaspaceSize=256m}
         SERVICE_MODULE: inventory-service
     container_name: flashsale-inventory-service
     restart: unless-stopped
     depends_on:
+      nacos:
+        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       mysql-inventory:
         condition: service_healthy
       redis:
@@ -308,6 +396,7 @@ services:
         condition: service_healthy
     environment:
       SERVER_PORT: ${INVENTORY_SERVICE_PORT:-6007}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=60.0}
       SPRING_DATASOURCE_URL: ${SPRING_INVENTORY_DB_URL:-jdbc:mysql://mysql-inventory:3306/${INVENTORY_DB_NAME:-FlashSale}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
       SPRING_DATASOURCE_USERNAME: ${INVENTORY_DB_USERNAME:-root}
       SPRING_DATASOURCE_PASSWORD: ${INVENTORY_DB_PASSWORD:-root123}
@@ -316,6 +405,7 @@ services:
       SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
       SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
     ports:
       - "${INVENTORY_SERVICE_HOST_PORT:-8084}:${INVENTORY_SERVICE_PORT:-6007}"
 
