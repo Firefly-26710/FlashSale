@@ -106,6 +106,29 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-login-load-test.ps
 - `jmeter/output/login-results.jtl`
 - `jmeter/output/login-jmeter.log`
 
+### 3.3 秒杀并发压测（库存300、并发500）
+
+目标：自动创建测试商品（库存300），发起 500 并发秒杀请求，校验是否超卖、库存守恒、用户去重是否正常。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-seckill-500-test.ps1 -CleanupAfterRun
+```
+
+可选参数示例：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-seckill-500-test.ps1 -Threads 500 -RampUp 20 -TargetStock 300 -VerificationTimeoutSec 180 -CleanupAfterRun
+```
+
+结果文件：
+
+- `jmeter/output/seckill-500-results.jtl`
+- `jmeter/output/seckill-500-jmeter.log`
+
+- 压测结果：`202` 响应 `500/500`，网络层错误 `0`。
+- 业务一致性：无超卖、库存守恒、无重复用户下单。
+- 架构链路校验：分库分表有命中分布，负载均衡生效，读写分离路由正常。
+
 ## 4. 常用地址
 
 - 前端入口：`http://localhost`（默认 `80`）
