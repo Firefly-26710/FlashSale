@@ -50,8 +50,8 @@ docker compose up -d --build --force-recreate backend1 backend2 order-service in
 
 Nginx 路由：
 
-- `/api/orders/**` -> `order-service`
-- 其他 `/api/**` -> `backend1` / `backend2` 负载均衡
+- 所有 `/api/**` -> `gateway-service`
+- 网关再按服务发现转发：`/api/orders/**` -> `order-service`，其他 `/api/**` -> `core-service` 集群
 
 ### 1.3 Nacos + Gateway 验证
 
@@ -145,6 +145,12 @@ docker compose logs -f frontend
 
 ## 3. JMeter 压测
 
+端口规范（默认值）：
+
+- 普通业务链路压测（静态、登录、秒杀、缓存穿透）默认走前端入口 `8085`。
+- 流量治理压测（限流/熔断/降级）直连网关 `8080`，避免绕过治理层。
+- 所有脚本均支持 `-BaseUrl` 与 `-TargetPort` 参数覆盖默认值。
+
 ### 3.1 静态文件压测
 
 目标：`GET /index.html`
@@ -200,9 +206,38 @@ powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-seckill-500-test.p
 - 业务一致性：无超卖、库存守恒、无重复用户下单。
 - 架构链路校验：分库分表有命中分布，负载均衡生效，读写分离路由正常。
 
+### 3.4 流量治理压测（熔断/限流/降级）
+
+目标：通过网关直连压测，验证限流返回 `429`，并配合服务下线验证降级 `503`。
+
+执行脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\jmeter\scripts\run-governance-load-test.ps1 -TargetPort 8080 -Threads 20 -Loops 20 -RampUp 5
+```
+
+当前网关温和阈值（默认）：
+
+- `core-service`：`replenishRate=30`，`burstCapacity=60`
+- `order-service`：`replenishRate=12`，`burstCapacity=24`
+
+本次实测结果（温和阈值）：
+
+- 总请求：`400`
+- `200`：`150`
+- `429`：`250`
+- `429` 占比：`62.5%`
+- 平均响应时间：`35.4 ms`
+- P95：`59 ms`
+
+结果文件：
+
+- `jmeter/output/governance-results.jtl`
+- `jmeter/output/governance-jmeter.log`
+
 ## 4. 常用地址
 
-- 前端入口：`http://localhost`（默认 `80`）
+- 前端入口：`http://localhost:8085`
 - 网关（gateway-service）：`http://localhost:8080`
 - Nacos 控制台：`http://localhost:8848/nacos`
 - 后端实例1（core-service）：`http://localhost:8081`

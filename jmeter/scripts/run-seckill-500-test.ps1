@@ -3,7 +3,7 @@ param(
     [string]$ComposeFile = "docker-compose.yml",
     [SecureString]$MysqlRootPassword,
     [string]$BaseUrl = "localhost",
-    [int]$TargetPort = 80,
+    [int]$TargetPort = 8085,
     [int]$Threads = 500,
     [int]$Loops = 1,
     [int]$RampUp = 60,

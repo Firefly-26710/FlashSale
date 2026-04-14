@@ -1,5 +1,7 @@
 param(
     [string]$JMeterBin = "D:\tools\jmeter\apache-jmeter-5.6.3\apache-jmeter-5.6.3\bin",
+    [string]$BaseUrl = "localhost",
+    [int]$TargetPort = 8085,
     [int]$Threads = 50,
     [int]$Loops = 20,
     [int]$RampUp = 10
@@ -30,7 +32,7 @@ if (-not (Test-Path $outputDir)) {
 if (Test-Path $result) { Remove-Item $result -Force }
 if (Test-Path $log) { Remove-Item $log -Force }
 
-& $jmeterExe -n -t $testPlan -q $props -l $result -j $log "-Jthreads=$Threads" "-Jloops=$Loops" "-Jrampup=$RampUp"
+& $jmeterExe -n -t $testPlan -q $props -l $result -j $log "-Jthreads=$Threads" "-Jloops=$Loops" "-Jrampup=$RampUp" "-Jbase_url=$BaseUrl" "-Jtarget_port=$TargetPort"
 
 if ($LASTEXITCODE -ne 0) {
     throw "JMeter run failed with exit code $LASTEXITCODE"
